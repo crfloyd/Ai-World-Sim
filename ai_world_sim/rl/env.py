@@ -162,7 +162,7 @@ class WorldEnv(gym.Env):
         self._steps += 1
 
         # --- Reward ----------------------------------------------------- #
-        reward = survival_reward(self._agent, died_this_step, stored_food_this_step)
+        reward = survival_reward(self._agent, died_this_step, stored_food_this_step, self.world_config)
 
         # --- Termination ------------------------------------------------ #
         terminated = not self._agent.alive

@@ -212,18 +212,7 @@ def build_self_features(world: WorldSim, agent: Agent) -> np.ndarray:
 
 
 def build_memory_features(world: WorldSim, agent: Agent) -> np.ndarray:
-    """Refresh agent memory from current visible area and return summary."""
-    # Update memory from what the agent can currently see.
-    agent.memory.update(
-        grid=world.grid,
-        agent_pos=agent.position,
-        animals=world.animals,
-        tick=world.tick_count,
-        sight_radius=world.sight_radius,
-        world_height=world.height,
-        world_width=world.width,
-    )
-    agent.memory.decay(world.tick_count)
+    """Return the memory summary for *agent* (read-only; no side effects)."""
     return agent.memory.summarize(agent.position, world.world_diag)
 
 

@@ -171,5 +171,5 @@ class AgentBrain(nn.Module):
         """
         logits, value = self.forward(local_grid, self_features, memory_features, action_mask)
         dist = torch.distributions.Categorical(logits=logits)
-        action = dist.mode if deterministic else dist.sample()
+        action = torch.argmax(logits, dim=-1) if deterministic else dist.sample()
         return action, dist.log_prob(action), value

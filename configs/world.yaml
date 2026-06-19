@@ -38,6 +38,11 @@ agents:
   thirst_per_tick: 0.5          # thirst rises faster than hunger
   tired_per_tick: 0.2
   tired_per_move: 0.15          # extra tired per movement action
+  # Time-to-danger at default rates (no recovery actions):
+  #   thirst: 100 / 0.5 = 200 ticks  ≈  2.1 days
+  #   hunger: 100 / 0.3 = 333 ticks  ≈  3.5 days
+  #   tired:  100 / 0.2 = 500 ticks  ≈  5.2 days (no movement)
+  #           100 / 0.35 = 286 ticks ≈  3.0 days (every tick has movement)
 
   # Damage from starvation / dehydration
   starvation_hp_loss: 2.0       # hp lost per tick when fully hungry
@@ -62,6 +67,9 @@ agents:
   forage_berry_amount: 2
   forage_wood_amount: 1
   forage_stone_amount: 1
+
+  # Food retrieval (units retrieved per retrieve_food action)
+  retrieve_food_amount: 1         # bounded retrieval: one unit per action
 
   # Hunting success (scripted; base chance before skill)
   hunt_base_hp_cost: 2.0
@@ -111,3 +119,14 @@ seeds:
     - 999003
     - 999004
     - 999005
+
+# -------------------------------------------------------------------------
+# Reward weights  (all weights are read by survival_reward in rl/rewards.py)
+# -------------------------------------------------------------------------
+rewards:
+  alive_reward: 0.01
+  hunger_penalty_scale: 0.001
+  thirst_penalty_scale: 0.0015    # higher than hunger: thirst kills faster
+  tired_penalty_scale: 0.0005
+  store_food_bonus: 0.05          # temporary shaping signal; set to 0.0 to disable
+  death_penalty: -1.0

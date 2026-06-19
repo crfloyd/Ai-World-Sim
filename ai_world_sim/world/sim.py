@@ -168,7 +168,22 @@ class WorldSim:
             )
             new_agents.append(agent)
         self.agents.extend(new_agents)
+        for agent in new_agents:
+            self.update_agent_memory(agent)
         return new_agents
+
+    def update_agent_memory(self, agent: Agent) -> None:
+        """Scan the agent's visible area and refresh memory, then decay stale entries."""
+        agent.memory.update(
+            grid=self.grid,
+            agent_pos=agent.position,
+            animals=self.animals,
+            tick=self.tick_count,
+            sight_radius=self.sight_radius,
+            world_height=self.height,
+            world_width=self.width,
+        )
+        agent.memory.decay(self.tick_count)
 
     # ------------------------------------------------------------------ #
     # Time advancement
@@ -204,6 +219,11 @@ class WorldSim:
                 events["season_change"] = self.season
                 if self.event_log:
                     self.event_log.log(f"Season changed to {self.season.label()}.")
+
+        # 6. Perception: each living agent updates memory from current world state.
+        for agent in self.agents:
+            if agent.alive:
+                self.update_agent_memory(agent)
 
         return events
 
@@ -369,14 +389,16 @@ class WorldSim:
         return stored > 0
 
     def retrieve_food(self, agent: Agent) -> bool:
-        """Move all stored food from home storage to agent's inventory.
+        """Retrieve up to *retrieve_food_amount* units of stored food.
 
         Only valid when the agent is at home_position.
         """
         agent.sleeping = False
         if not agent.is_at_home:
             return False
-        retrieved = agent.retrieve_all_food()
+        agent_cfg = self.config.get("agents", {})
+        amount = int(agent_cfg.get("retrieve_food_amount", 1))
+        retrieved = agent.retrieve_up_to(amount)
         if retrieved > 0 and self.event_log:
             self.event_log.log(f"Agent {agent.id} retrieved {retrieved} stored food.")
         return retrieved > 0

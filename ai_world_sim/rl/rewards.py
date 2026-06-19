@@ -8,20 +8,23 @@ Rules:
     not dehydrating, storing food as a buffer against future scarcity.
   - The policy must discover HOW to achieve these outcomes itself.
 
+All reward weights are read from ``config["rewards"]`` so they can be
+tuned without touching code.  The module-level constants below are the
+documented defaults — they are used as fallbacks when no config is supplied.
+
 Current reward signal:
-  +0.01  per tick alive
-  -0.001 × hunger      (encourages keeping hunger low)
-  -0.001 × thirst      (encourages keeping thirst low; slightly higher weight)
-  -0.0005 × tired      (mild discouragement of exhaustion)
-  +0.1   on a day survived   (milestone bonus every ticks_per_day ticks)
-  +0.05  on storing food     (shaping: rewards planning ahead)
-  -1.0   on death
+  +alive_reward           per tick alive                          (default 0.01)
+  -hunger_penalty_scale × hunger                                  (default 0.001)
+  -thirst_penalty_scale × thirst   (higher than hunger weight)   (default 0.0015)
+  -tired_penalty_scale × tired                                    (default 0.0005)
+  +store_food_bonus       on a successful store_food action       (default 0.05)
+  +death_penalty          on death (negative value)               (default -1.0)
 
-Weights are intentionally conservative — a surviving agent should earn
-a small but clearly positive signal, and death should dominate as negative.
+The ``store_food_bonus`` is a temporary shaping signal to encourage
+planning ahead.  Set it to 0.0 in the config to disable it once the
+policy is stable.
 
-TODO: Remove the store_food shaping signal once the policy is stable.
-TODO: Make all weights config-driven.
+TODO: Remove store_food_bonus once policy reliably returns home to store.
 TODO: Add living-through-winter bonus once seasonal difficulty is noticeable.
 """
 
@@ -29,11 +32,12 @@ from __future__ import annotations
 
 from ai_world_sim.world.entities import Agent
 
+# Default weights — used when no config is supplied.
 ALIVE_REWARD = 0.01
 HUNGER_PENALTY_SCALE = 0.001
-THIRST_PENALTY_SCALE = 0.0015       # slightly higher than hunger: thirst is faster-killing
+THIRST_PENALTY_SCALE = 0.0015       # slightly higher: thirst kills faster than hunger
 TIRED_PENALTY_SCALE = 0.0005
-STORE_FOOD_BONUS = 0.05
+STORE_FOOD_BONUS = 0.05             # temporary shaping; set config rewards.store_food_bonus=0.0 to disable
 DEATH_PENALTY = -1.0
 
 
@@ -41,6 +45,7 @@ def survival_reward(
     agent: Agent,
     died_this_step: bool,
     stored_food_this_step: bool,
+    config: dict | None = None,
 ) -> float:
     """Compute one-step reward for *agent*.
 
@@ -52,14 +57,25 @@ def survival_reward(
         True if the agent transitioned alive → dead this step.
     stored_food_this_step:
         True if the store_food action succeeded this step.
+    config:
+        World/training config dict.  Reads weights from ``config["rewards"]``.
+        Falls back to module-level defaults when None or key is missing.
     """
-    if died_this_step:
-        return DEATH_PENALTY
+    cfg = (config or {}).get("rewards", {})
+    alive_reward = float(cfg.get("alive_reward", ALIVE_REWARD))
+    hunger_scale = float(cfg.get("hunger_penalty_scale", HUNGER_PENALTY_SCALE))
+    thirst_scale = float(cfg.get("thirst_penalty_scale", THIRST_PENALTY_SCALE))
+    tired_scale = float(cfg.get("tired_penalty_scale", TIRED_PENALTY_SCALE))
+    store_bonus = float(cfg.get("store_food_bonus", STORE_FOOD_BONUS))
+    death_penalty = float(cfg.get("death_penalty", DEATH_PENALTY))
 
-    reward = ALIVE_REWARD
-    reward -= agent.hunger * HUNGER_PENALTY_SCALE
-    reward -= agent.thirst * THIRST_PENALTY_SCALE
-    reward -= agent.tired * TIRED_PENALTY_SCALE
+    if died_this_step:
+        return death_penalty
+
+    reward = alive_reward
+    reward -= agent.hunger * hunger_scale
+    reward -= agent.thirst * thirst_scale
+    reward -= agent.tired * tired_scale
     if stored_food_this_step:
-        reward += STORE_FOOD_BONUS
+        reward += store_bonus
     return float(reward)

@@ -104,10 +104,12 @@ def build_ppo_config(train_cfg: dict) -> PPOConfig:
     e = train_cfg.get("environment", {})
     m = train_cfg.get("model", {})
 
+    world_cfg = load_config(DEFAULT_WORLD_CONFIG_PATH)
+    training_range = world_cfg.get("seeds", {}).get("training_range", [0, 899_999])
     env_config = {
         "world_config_path": str(DEFAULT_WORLD_CONFIG_PATH),
         "max_steps_per_episode": int(e.get("max_steps_per_episode", 1000)),
-        "seed_range": [0, 899_999],
+        "seed_range": training_range,
     }
 
     custom_model_config = {

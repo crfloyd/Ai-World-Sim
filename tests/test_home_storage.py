@@ -72,12 +72,12 @@ def test_retrieve_food_works_at_home(sim):
     agent = agents[0]
     assert agent.is_at_home
 
-    # Pre-load stored food.
-    agent.stored_food["berries"] = 10
+    # Store 1 berry — within the default retrieve_food_amount=1 limit.
+    agent.stored_food["berries"] = 1
     result = sim.retrieve_food(agent)
 
     assert result is True
-    assert agent.item_count("berries") == 10
+    assert agent.item_count("berries") == 1
     assert not agent.has_stored_food()
 
 
@@ -109,17 +109,25 @@ def test_retrieve_food_fails_without_stored_food(sim):
 
 
 def test_store_then_retrieve_roundtrip(sim):
+    """Store stores everything at once; retrieve is bounded to one unit per action."""
     agents = sim.spawn_agents(1)
     agent = agents[0]
-    agent.add_item("berries", 4)
-    agent.add_item("meat", 2)
+    agent.add_item("berries", 2)
+    agent.add_item("meat", 1)
 
     sim.store_food(agent)
     assert not agent.has_food()
+    assert agent.stored_food.get("berries", 0) == 2
+    assert agent.stored_food.get("meat", 0) == 1
 
+    # Retrieve is bounded: default retrieve_food_amount=1, so 3 calls needed.
     sim.retrieve_food(agent)
-    assert agent.item_count("berries") == 4
-    assert agent.item_count("meat") == 2
+    assert agent.total_carried() == 1
+    sim.retrieve_food(agent)
+    assert agent.total_carried() == 2
+    sim.retrieve_food(agent)
+    assert agent.total_carried() == 3
+    assert not agent.has_stored_food()
 
 
 def test_action_mask_store_blocked_away_from_home(sim):
@@ -161,3 +169,16 @@ def test_action_mask_retrieve_valid_at_home_with_stored(sim):
 
     mask = build_action_mask(sim, agent)
     assert mask[RETRIEVE_FOOD] == 1.0
+
+
+def test_retrieve_food_bounded_per_action(sim):
+    """A single retrieve_food call should only retrieve retrieve_food_amount units."""
+    agents = sim.spawn_agents(1)
+    agent = agents[0]
+    agent.stored_food["berries"] = 5
+
+    result = sim.retrieve_food(agent)
+    assert result is True
+    retrieve_amount = int(sim.config.get("agents", {}).get("retrieve_food_amount", 1))
+    assert agent.item_count("berries") == retrieve_amount
+    assert agent.stored_food.get("berries", 0) == 5 - retrieve_amount

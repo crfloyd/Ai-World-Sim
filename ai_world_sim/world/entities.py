@@ -128,3 +128,24 @@ class Agent:
                 self.inventory[item] = self.inventory.get(item, 0) + count
                 total += count
         return total
+
+    def retrieve_up_to(self, max_units: int) -> int:
+        """Move up to *max_units* of stored food to inventory.
+
+        Prioritises berries then meat.  Returns the number of units retrieved.
+        """
+        remaining = max_units
+        total = 0
+        for item in ("berries", "meat"):
+            if remaining <= 0:
+                break
+            available = self.stored_food.get(item, 0)
+            if available > 0:
+                take = min(available, remaining)
+                self.stored_food[item] -= take
+                if self.stored_food[item] == 0:
+                    del self.stored_food[item]
+                self.inventory[item] = self.inventory.get(item, 0) + take
+                total += take
+                remaining -= take
+        return total
