@@ -38,3 +38,26 @@ def get(config: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 DEFAULT_WORLD_CONFIG_PATH = Path(__file__).parent.parent.parent / "configs" / "world.yaml"
 DEFAULT_TRAIN_CONFIG_PATH = Path(__file__).parent.parent.parent / "configs" / "train.yaml"
+
+
+def resolve_predator_profile(config: dict[str, Any]) -> dict[str, Any]:
+    """Merge the active predator profile into config['animals'] and return a new config.
+
+    Reads ``config['animals']['predator_curriculum_phase']`` to select a named
+    profile from ``config['animals']['predator_profiles']``, then shallow-merges
+    the profile keys over the base animals values.  Non-profile keys are preserved.
+    Returns the original config unchanged if no phase is set or no matching profile
+    is found.
+    """
+    anim = config.get("animals", {})
+    phase = anim.get("predator_curriculum_phase")
+    if not phase:
+        return config
+
+    profiles = anim.get("predator_profiles", {})
+    profile = profiles.get(phase)
+    if not profile:
+        return config
+
+    new_anim: dict[str, Any] = {**anim, **profile}
+    return {**config, "animals": new_anim}

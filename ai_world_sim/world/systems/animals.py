@@ -102,8 +102,12 @@ class AnimalSystem:
 
     def __init__(self, config: dict, rng: np.random.Generator) -> None:
         anim_cfg = config.get("animals", {})
+        self.wolves_enabled: bool = bool(anim_cfg.get("wolves_enabled", True))
         self.flee_range: int = int(anim_cfg.get("flee_range", 5))
-        self.hunt_range: int = int(anim_cfg.get("hunt_range", 10))
+        # wolf_hunt_range takes precedence over the legacy hunt_range key
+        self.hunt_range: int = int(
+            anim_cfg.get("wolf_hunt_range", anim_cfg.get("hunt_range", 10))
+        )
         self.wolf_attack_damage: float = float(anim_cfg.get("wolf_attack_damage", 15.0))
         self.wolf_sleep_bonus: float = float(anim_cfg.get("wolf_sleep_bonus_damage", 10.0))
         self.rng = rng
@@ -123,7 +127,8 @@ class AnimalSystem:
             if not animal.alive:
                 continue
             if animal.is_predator:
-                self._update_wolf(animal, world, living_agents, prey_list, event_log)
+                if self.wolves_enabled:
+                    self._update_wolf(animal, world, living_agents, prey_list, event_log)
             else:
                 self._update_prey(animal, world, living_agents, wolves)
 

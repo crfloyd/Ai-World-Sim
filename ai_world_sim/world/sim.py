@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from ai_world_sim.common.config import resolve_predator_profile
 from ai_world_sim.world.animals import Animal, AnimalSpecies
 from ai_world_sim.world.entities import Agent
 from ai_world_sim.world.generator import find_spawn_positions, generate_world
@@ -41,9 +42,9 @@ class WorldSim:
     """Container for one complete procedurally generated world instance."""
 
     def __init__(self, config: dict, seed: int | None = None) -> None:
-        self.config = config
-        world_cfg = config.get("world", {})
-        mem_cfg = config.get("memory", {})
+        self.config = resolve_predator_profile(config)
+        world_cfg = self.config.get("world", {})
+        mem_cfg = self.config.get("memory", {})
 
         self.width: int = int(world_cfg.get("width", 64))
         self.height: int = int(world_cfg.get("height", 64))
@@ -61,10 +62,10 @@ class WorldSim:
         self._season_sys = SeasonSystem(
             days_per_season=int(world_cfg.get("days_per_season", 30))
         )
-        self._health_sys = HealthSystem(config)
-        self._resource_sys = ResourceSystem(config, self._rng)
-        self._ecology_sys = EcologySystem(config)
-        self._animal_sys = AnimalSystem(config, self._rng)
+        self._health_sys = HealthSystem(self.config)
+        self._resource_sys = ResourceSystem(self.config, self._rng)
+        self._ecology_sys = EcologySystem(self.config)
+        self._animal_sys = AnimalSystem(self.config, self._rng)
 
         self.season: Season = Season.SPRING
         self.grid: list[list[Cell]] = []
