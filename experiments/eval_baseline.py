@@ -24,9 +24,9 @@ Usage
     # Override episode count / length
     python experiments/eval_baseline.py --n-seeds 50 --max-steps 500
 
-Outputs
--------
-experiments/
+Outputs (gitignored, written to experiments/results/)
+------------------------------------------------------
+experiments/results/
   baseline_results_<profile>.json
   baseline_report.md
   plots/
@@ -74,8 +74,9 @@ N_SEEDS     = 100
 MAX_STEPS   = 1000
 SEED_OFFSET = 0
 
-OUT_DIR   = Path(__file__).parent
+OUT_DIR   = Path(__file__).parent / "results"
 PLOTS_DIR = OUT_DIR / "plots"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
 ACTION_NAMES = [
@@ -212,7 +213,7 @@ def _save(fig: plt.Figure, name: str) -> None:
     path = PLOTS_DIR / name
     fig.savefig(path, dpi=130, bbox_inches="tight")
     plt.close(fig)
-    print(f"  saved plots/{name}")
+    print(f"  saved results/plots/{name}")
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +550,7 @@ def write_report(
 
     report_path = OUT_DIR / "baseline_report.md"
     report_path.write_text("\n".join(lines))
-    print(f"  saved baseline_report.md")
+    print(f"  saved results/baseline_report.md")
     return report_path
 
 
@@ -658,7 +659,7 @@ def main() -> None:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "results": results,
             }, fh, indent=2)
-        print(f"  saved baseline_results_{profile}.json")
+        print(f"  saved results/baseline_results_{profile}.json")
         print()
 
     elapsed_total = time.perf_counter() - t_total

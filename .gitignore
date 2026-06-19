@@ -8,3 +8,11 @@ checkpoints/
 *.pt
 *.pth
 ray_results/
+
+# Generated experiment outputs
+experiments/results/*
+experiments/results/plots/*
+!experiments/results/.gitkeep
+experiments/plots/
+experiments/baseline_results_*.json
+experiments/baseline_report.md

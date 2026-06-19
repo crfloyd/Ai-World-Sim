@@ -167,3 +167,104 @@ def test_action_mask_hunt_valid_with_adjacent_prey(small_config):
             assert mask[HUNT] == 1.0
             return
     pytest.skip("No passable adjacent cell for prey.")
+
+
+# ---------------------------------------------------------------------------
+# Predator curriculum profile tests
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def base_config():
+    cfg = load_config(DEFAULT_WORLD_CONFIG_PATH)
+    cfg["world"]["width"] = 16
+    cfg["world"]["height"] = 16
+    return cfg
+
+
+def _make_sim(cfg: dict, profile: str) -> WorldSim:
+    cfg = dict(cfg)
+    cfg["animals"] = dict(cfg.get("animals", {}))
+    cfg["animals"]["predator_curriculum_phase"] = profile
+    s = WorldSim(config=cfg, seed=1)
+    s.generate()
+    return s
+
+
+def test_profile_none_no_wolves_spawned(base_config):
+    sim = _make_sim(base_config, "none")
+    wolves = [a for a in sim.animals if a.species == AnimalSpecies.WOLF]
+    assert len(wolves) == 0, f"Expected 0 wolves with 'none' profile, got {len(wolves)}"
+
+
+def test_profile_none_wolf_ai_disabled(base_config):
+    sim = _make_sim(base_config, "none")
+    assert sim._animal_sys.wolves_enabled is False
+
+
+def test_profile_none_wolf_attack_zero(base_config):
+    sim = _make_sim(base_config, "none")
+    assert sim._animal_sys.wolf_attack_damage == 0.0
+
+
+def test_profile_light_one_wolf_spawned(base_config):
+    sim = _make_sim(base_config, "light")
+    wolves = [a for a in sim.animals if a.species == AnimalSpecies.WOLF]
+    assert len(wolves) == 1, f"Expected 1 wolf with 'light' profile, got {len(wolves)}"
+
+
+def test_profile_light_reduced_hunt_range(base_config):
+    sim = _make_sim(base_config, "light")
+    assert sim._animal_sys.hunt_range == 5
+
+
+def test_profile_light_reduced_damage(base_config):
+    sim = _make_sim(base_config, "light")
+    assert sim._animal_sys.wolf_attack_damage == 8.0
+
+
+def test_profile_normal_three_wolves(base_config):
+    sim = _make_sim(base_config, "normal")
+    wolves = [a for a in sim.animals if a.species == AnimalSpecies.WOLF]
+    assert len(wolves) == 3, f"Expected 3 wolves with 'normal' profile, got {len(wolves)}"
+
+
+def test_profile_normal_standard_hunt_range(base_config):
+    sim = _make_sim(base_config, "normal")
+    assert sim._animal_sys.hunt_range == 10
+
+
+def test_profile_normal_standard_damage(base_config):
+    sim = _make_sim(base_config, "normal")
+    assert sim._animal_sys.wolf_attack_damage == 15.0
+
+
+def test_profile_harsh_six_wolves(base_config):
+    sim = _make_sim(base_config, "harsh")
+    wolves = [a for a in sim.animals if a.species == AnimalSpecies.WOLF]
+    assert len(wolves) == 6, f"Expected 6 wolves with 'harsh' profile, got {len(wolves)}"
+
+
+def test_profile_harsh_increased_hunt_range(base_config):
+    sim = _make_sim(base_config, "harsh")
+    assert sim._animal_sys.hunt_range == 15
+
+
+def test_profile_harsh_increased_damage(base_config):
+    sim = _make_sim(base_config, "harsh")
+    assert sim._animal_sys.wolf_attack_damage == 20.0
+
+
+def test_profile_none_wolf_does_not_attack(base_config):
+    """With 'none' profile, manually placed wolf should not damage agent."""
+    sim = _make_sim(base_config, "none")
+    agents = sim.spawn_agents(1)
+    agent = agents[0]
+    agent.position = (5, 5)
+    agent.home_position = (0, 0)
+
+    wolf = Animal.create(99, (5, 6), AnimalSpecies.WOLF, sim.config)
+    sim.animals.append(wolf)
+
+    hp_before = agent.hp
+    sim._animal_sys.tick(sim, sim.animals, sim.agents, None)
+    assert agent.hp == hp_before, "Wolf should not attack when wolves_enabled=False"
