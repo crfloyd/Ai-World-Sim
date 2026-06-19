@@ -26,6 +26,7 @@ from typing import Any
 
 import numpy as np
 
+from ai_world_sim.common.config import resolve_predator_profile
 from ai_world_sim.world.animals import Animal, AnimalSpecies
 from ai_world_sim.world.entities import Agent
 from ai_world_sim.world.generator import find_spawn_positions, generate_world
@@ -41,7 +42,7 @@ class WorldSim:
     """Container for one complete procedurally generated world instance."""
 
     def __init__(self, config: dict, seed: int | None = None) -> None:
-        self.config = config
+        self.config = resolve_predator_profile(config)
         world_cfg = config.get("world", {})
         mem_cfg = config.get("memory", {})
 

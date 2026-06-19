@@ -78,19 +78,54 @@ animals:
   rabbits_per_world: 20
   deer_per_world: 10
   wolves_per_world: 3
+  wolves_enabled: true            # master switch; false = no wolf AI or spawning
 
   rabbit_hp: 20.0
   deer_hp: 40.0
   wolf_hp: 80.0
 
   flee_range: 5                 # tiles at which prey starts fleeing
-  hunt_range: 10                # tiles at which wolf starts hunting
+  hunt_range: 10                # tiles at which wolf starts hunting (legacy key)
+  wolf_hunt_range: 10           # wolf detection range; overrides hunt_range when set
   wolf_attack_damage: 15.0
   wolf_sleep_bonus_damage: 10.0 # extra damage on sleeping agent
 
   # Meat yield on kill
   rabbit_meat_yield: 1
   deer_meat_yield: 3
+
+  # -----------------------------------------------------------------------
+  # Predator curriculum
+  # Set predator_curriculum_phase to activate a named profile.
+  # Profile keys are merged over the base values above.
+  # -----------------------------------------------------------------------
+  predator_curriculum_phase: normal    # none | light | normal | harsh
+
+  predator_profiles:
+    none:
+      wolves_enabled: false
+      wolves_per_world: 0
+      wolf_hunt_range: 0
+      wolf_attack_damage: 0.0
+      wolf_sleep_bonus_damage: 0.0
+    light:
+      wolves_enabled: true
+      wolves_per_world: 1
+      wolf_hunt_range: 5
+      wolf_attack_damage: 8.0
+      wolf_sleep_bonus_damage: 4.0
+    normal:
+      wolves_enabled: true
+      wolves_per_world: 3
+      wolf_hunt_range: 10
+      wolf_attack_damage: 15.0
+      wolf_sleep_bonus_damage: 10.0
+    harsh:
+      wolves_enabled: true
+      wolves_per_world: 6
+      wolf_hunt_range: 15
+      wolf_attack_damage: 20.0
+      wolf_sleep_bonus_damage: 15.0
 
 memory:
   sight_radius: 10              # cells the agent can see (observation window = 2*r+1)

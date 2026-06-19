@@ -1,75 +1,67 @@
 # V0 Baseline Evaluation Report
 
-**Date:** 2026-06-19 05:54 UTC  
+**Date:** 2026-06-19 06:27 UTC  
 **Policy:** untrained AgentBrain (random initialisation, action mask active)  
-**Episodes:** 100 seeds (0–99)  
+**Episodes per profile:** 100  
 **Max steps / episode:** 1000  
-**Evaluation time:** 53s
+**Profiles evaluated:** none, light, normal  
+**Evaluation time:** 0s
 
 ---
 
 ## Survival Summary
 
-| Metric | Value |
-|---|---|
-| Episodes survived to max_steps | 0/100 (0%) |
-| Mean survival ticks | 116.2 ± 123.6 |
-| Median survival ticks | 75 |
-| Min / Max survival | 11 / 640 |
+| Profile | Mean ticks | Median | Min | Max | Survived (%) |
+|---|---|---|---|---|---|
+| none | 350.6 ± 184.0 | 240 | 235 | 1000 | 4/100 (4%) |
+| light | 224.0 ± 182.4 | 235 | 12 | 1000 | 2/100 (2%) |
+| normal | 122.9 ± 117.4 | 78 | 8 | 699 | 0/100 (0%) |
 
 ## Episode Reward
 
-| Metric | Value |
-|---|---|
-| Mean reward | -6.495 |
-| Std reward | 7.736 |
-| Min / Max reward | -35.435 / -0.841 |
+| Profile | Mean | Std | Min | Max |
+|---|---|---|---|---|
+| none | -25.599 | 8.222 | -54.676 | -19.656 |
+| light | -14.526 | 11.392 | -61.126 | -0.945 |
+| normal | -7.843 | 9.239 | -47.079 | -0.907 |
 
 ## Deaths by Cause
 
-| Cause | Count | % |
-|---|---|---|
-| dehydration | 14 | 14% |
-| starvation | 0 | 0% |
-| wolf | 86 | 86% |
-| survived | 0 | 0% |
+| Profile | Dehydration | Starvation | Wolf | Survived |
+|---|---|---|---|---|
+| none | 96 (96%) | 0 (0%) | 0 (0%) | 4 (4%) |
+| light | 48 (48%) | 0 (0%) | 50 (50%) | 2 (2%) |
+| normal | 23 (23%) | 0 (0%) | 77 (77%) | 0 (0%) |
 
 ## Hunger Distribution
 
-| Metric | Value |
-|---|---|
-| Mean hunger (per episode mean) | 5.11 ± 3.62  [min 1.11, max 22.80] |
-| % episodes reaching max hunger | 0/100 |
+| Profile | Mean hunger | Episodes hitting max |
+|---|---|---|
+| none | 6.40 ± 2.98  [min 2.28, max 20.59] | 0/100 |
+| light | 5.54 ± 2.61  [min 1.56, max 14.29] | 0/100 |
+| normal | 5.13 ± 3.89  [min 1.16, max 25.07] | 0/100 |
 
 ## Thirst Distribution
 
-| Metric | Value |
-|---|---|
-| Mean thirst (per episode mean) | 21.77 ± 17.84  [min 1.91, max 58.54] |
-| % episodes reaching max thirst | 14/100 |
-
-## Behaviour Frequency
-
-| Behaviour | Mean % of ticks | Std |
+| Profile | Mean thirst | Episodes hitting max |
 |---|---|---|
-| Sleep action used | 16.1% | ±5.9% |
-| Ticks spent at home | 4.5% | ±7.4% |
+| none | 52.69 ± 8.27  [min 29.12, max 65.46] | 98/100 |
+| light | 37.40 ± 19.00  [min 2.12, max 58.88] | 51/100 |
+| normal | 24.49 ± 19.73  [min 2.25, max 63.48] | 23/100 |
 
-## Action Distribution
+## Behaviour Frequencies
 
-| Rank | Action | Share |
+| Profile | Sleep (%) | At home (%) |
 |---|---|---|
-| 1 | sleep | 15.2% |
-| 2 | rest | 14.5% |
-| 3 | move_N | 14.5% |
-| 4 | move_S | 13.8% |
-| 5 | move_E | 13.2% |
+| none | 15.2 ± 2.1 | 1.4 ± 1.7 |
+| light | 14.4 ± 3.2 | 2.2 ± 3.6 |
+| normal | 15.0 ± 5.3 | 5.8 ± 8.1 |
 
 ## Plots
 
 ![Survival Duration](plots/01_survival_duration.png)
 ![Episode Reward](plots/02_episode_reward.png)
-![Death Causes](plots/03_death_causes.png)
+![Death Causes](plots/03_death_causes_comparison.png)
 ![Hunger Distribution](plots/04_hunger_distribution.png)
 ![Thirst Distribution](plots/05_thirst_distribution.png)
 ![Sleep Frequency](plots/06_sleep_frequency.png)
@@ -80,19 +72,20 @@
 
 ## Interpretation
 
-The untrained policy's action distribution reflects **random exploration constrained
-by the action mask** rather than any learned survival strategy.  Key observations:
+**`none` profile**: 0/100 wolf kills, 96/100 dehydration, 0/100 starvation. Without wolves, the agent dies on its own schedule — confirming that thirst (200-tick TTD) is the primary environmental threat.
 
-- **Survival rate** of 0/100 (0%) at 1000 ticks indicates
-  whether random valid actions alone are sufficient for near-term survival.
-- **Dominant death cause** (wolf) tells us which threat the policy
-  must first learn to manage.
-- **Mean thirst** and **mean hunger** at episode end show how quickly stats
-  saturate under a random policy.
-- **Sleep frequency** and **home frequency** near zero would confirm that
-  safe-rest and home-return behaviours are not yet emergent.
+**`normal` profile**: 77/100 wolf kills confirm wolves dominate episode outcomes, masking thirst/hunger signals completely.  The random policy never develops avoidance so mean survival stays near 123 ticks.
 
-A trained policy should show: reduced deaths by dehydration/starvation,
-higher survival ticks, non-random action distribution (DRINK, EAT, FORAGE
-over-represented relative to their mask availability), and measurable home
-frequency indicating learned navigation.
+**`light` profile**: 50/100 wolf kills, 48/100 dehydration. Mean survival 224 ticks — wolves are present but no longer dominant, allowing thirst and starvation signals to appear in training data.
+
+**Training recommendation**: Start with `predator_curriculum_phase: light` so the
+policy sees wolf threat without being overwhelmed.  Once mean survival exceeds
+~300 ticks on `light`, advance to `normal` to introduce full ecological pressure.
+The `none` profile is useful for isolating hunger/thirst learning without predator
+interference during early curriculum phases.
+
+**What the trained policy must learn (priority order):**
+1. `light` / `none`: drink water when thirsty — prevents dehydration deaths
+2. `light` / `none`: forage and eat — prevents starvation
+3. `light`: avoid or flee single wolves — extends survival significantly
+4. `normal`: navigate multi-wolf pressure, use home safety, sleep carefully
