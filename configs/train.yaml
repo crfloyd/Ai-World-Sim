@@ -1,0 +1,32 @@
+training:
+  algorithm: PPO
+  num_rollout_workers: 4
+  num_envs_per_worker: 2
+  train_batch_size: 4000
+  sgd_minibatch_size: 512
+  num_sgd_iter: 10
+  lr: 0.0003
+  gamma: 0.99
+  lambda_gae: 0.95
+  clip_param: 0.2
+  entropy_coeff: 0.01
+  vf_loss_coeff: 0.5
+  max_iterations: 1000
+  checkpoint_freq: 50
+  checkpoint_dir: "checkpoints/"
+
+environment:
+  max_steps_per_episode: 500
+  observation_window: 5     # NxN grid window centered on agent (must be odd)
+  num_seeds: 100
+  seed_range: [0, 999999]
+  num_agents: 1             # agents per world instance (multi-agent is a future TODO)
+
+model:
+  # CNN filters: [out_channels, kernel_size, stride]
+  cnn_filters:
+    - [16, 3, 1]
+    - [32, 3, 1]
+  mlp_hidden: [128, 64]
+  trunk_hidden: [256, 128]
+  use_action_masking: true

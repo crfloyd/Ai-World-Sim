@@ -1,0 +1,41 @@
+world:
+  width: 64
+  height: 64
+  default_seed: 42
+  ticks_per_day: 24
+  days_per_season: 30
+
+terrain:
+  water_threshold: 0.25
+  grass_threshold: 0.55
+  forest_threshold: 0.75
+  # above forest_threshold -> mountain
+
+resources:
+  tree_density: 0.6       # probability of trees in forest cells
+  berry_density: 0.4      # probability of berries in grass cells
+  stone_density: 0.2      # probability of stone in any passable cell
+  max_trees: 10
+  max_berries: 5
+  max_stone: 8
+
+  # Resource regeneration per tick (fraction of max restored)
+  regen_rate_spring: 0.005
+  regen_rate_summer: 0.003
+  regen_rate_autumn: 0.002
+  regen_rate_winter: 0.0
+
+agents:
+  start_hp: 100.0
+  max_hp: 100.0
+  start_hunger: 0.0
+  max_hunger: 100.0
+  start_fatigue: 0.0
+  max_fatigue: 100.0
+  hunger_per_tick: 0.5
+  fatigue_per_tick: 0.3
+  starvation_hp_loss: 2.0   # hp lost per tick when fully hungry
+  rest_fatigue_recovery: 5.0
+  forage_berry_amount: 2
+  forage_wood_amount: 1
+  forage_stone_amount: 1
