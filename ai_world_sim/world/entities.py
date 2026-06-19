@@ -1,14 +1,15 @@
 """Agent entity definition.
 
 Each agent is an instance of the shared neural policy operating inside the world.
-Traits, skills, and memory are deliberately kept as open dicts so the observation
-encoder can expose whichever subset the policy sees — and so future systems
+Traits, skills, and memory are deliberately kept extensible so future systems
 (relationships, factions, culture) can attach data without changing this class.
 
+All survival stats are normalised to [0, 1] in the observation builder —
+raw values are stored here at their natural scale.
+
 TODO: Add relationship map (trust/hostility per other agent id).
-TODO: Add faction membership.
-TODO: Add long-term episodic memory structures.
-TODO: Add animal entities (prey, predators).
+TODO: Add faction membership and reputation scores.
+TODO: Add long-term episodic memory structures beyond MemoryStore.
 """
 
 from __future__ import annotations
@@ -16,40 +17,64 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from ai_world_sim.world.memory import MemoryStore
+
 
 @dataclass
 class Agent:
-    """A single individual instantiated from the shared policy.
-
-    All numeric stats are floats so the observation encoder can normalise them
-    without casting.
-    """
+    """A single individual instantiated from the shared policy."""
 
     id: int
-    position: tuple[int, int]  # (row, col)
+    position: tuple[int, int]       # (row, col)
+    home_position: tuple[int, int]  # spawn location; used for home storage / safe sleep
 
+    # Survival stats
     hp: float = 100.0
     hunger: float = 0.0
-    fatigue: float = 0.0
+    thirst: float = 0.0
+    tired: float = 0.0
 
-    # Counts of carried items: {"berries": 3, "wood": 1, "stone": 0, ...}
+    # Inventory: items carried on the agent
     inventory: dict[str, int] = field(default_factory=dict)
 
-    # Continuous scalar traits, e.g. {"strength": 0.8, "agility": 0.6}.
-    # Values are sampled at spawn and remain fixed (nature, not learned).
+    # Home storage: food cached at home_position
+    stored_food: dict[str, int] = field(default_factory=dict)
+
+    # Intrinsic traits (fixed at spawn; nature not learned)
     traits: dict[str, float] = field(default_factory=dict)
 
-    # Learned skill levels, e.g. {"foraging": 0.2, "crafting": 0.0}.
-    # TODO: increment skills on successful action use.
+    # Learned skill levels — incremented by systems on successful use
+    # TODO: increment skills on repeated successful use.
     skills: dict[str, float] = field(default_factory=dict)
 
-    # Short-term working memory written by the brain or systems.
-    # e.g. {"last_food_pos": (12, 7), "seen_danger": False}
-    # TODO: Replace with a structured episodic memory buffer.
-    memory: dict[str, Any] = field(default_factory=dict)
+    # Short-term working memory exposed to systems
+    # The MemoryStore handles geographic memory; this dict is for ad-hoc state.
+    memory: MemoryStore = field(default_factory=MemoryStore)
 
+    # Status flags
     alive: bool = True
-    age: int = 0  # ticks lived
+    sleeping: bool = False  # True while sleep action is active; wolves deal bonus damage
+    age: int = 0            # ticks lived
+
+    # ------------------------------------------------------------------ #
+    # Derived state queries
+    # ------------------------------------------------------------------ #
+
+    @property
+    def is_at_home(self) -> bool:
+        return self.position == self.home_position
+
+    def is_starving(self) -> bool:
+        return self.hunger >= 100.0
+
+    def is_dehydrated(self) -> bool:
+        return self.thirst >= 100.0
+
+    def is_exhausted(self) -> bool:
+        return self.tired >= 100.0
+
+    def is_dead(self) -> bool:
+        return not self.alive or self.hp <= 0.0
 
     # ------------------------------------------------------------------ #
     # Inventory helpers
@@ -59,7 +84,7 @@ class Agent:
         self.inventory[item] = self.inventory.get(item, 0) + amount
 
     def remove_item(self, item: str, amount: int = 1) -> bool:
-        """Remove *amount* of *item*. Returns False if insufficient stock."""
+        """Remove *amount* of *item* from inventory. Returns False if insufficient."""
         if self.inventory.get(item, 0) >= amount:
             self.inventory[item] -= amount
             if self.inventory[item] == 0:
@@ -73,15 +98,33 @@ class Agent:
     def total_carried(self) -> int:
         return sum(self.inventory.values())
 
+    def has_food(self) -> bool:
+        """True if the agent carries any edible item."""
+        return self.item_count("berries") > 0 or self.item_count("meat") > 0
+
+    def has_stored_food(self) -> bool:
+        return sum(self.stored_food.values()) > 0
+
     # ------------------------------------------------------------------ #
-    # State queries
+    # Home storage helpers
     # ------------------------------------------------------------------ #
 
-    def is_starving(self) -> bool:
-        return self.hunger >= 100.0
+    def store_all_food(self) -> int:
+        """Move all food from inventory to stored_food. Returns units stored."""
+        total = 0
+        for item in ("berries", "meat"):
+            count = self.inventory.pop(item, 0)
+            if count:
+                self.stored_food[item] = self.stored_food.get(item, 0) + count
+                total += count
+        return total
 
-    def is_exhausted(self) -> bool:
-        return self.fatigue >= 100.0
-
-    def is_dead(self) -> bool:
-        return not self.alive or self.hp <= 0.0
+    def retrieve_all_food(self) -> int:
+        """Move all stored food to inventory. Returns units retrieved."""
+        total = 0
+        for item in list(self.stored_food.keys()):
+            count = self.stored_food.pop(item, 0)
+            if count:
+                self.inventory[item] = self.inventory.get(item, 0) + count
+                total += count
+        return total

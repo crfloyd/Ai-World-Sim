@@ -1,144 +1,293 @@
-"""Observation builder — converts raw world state to a neural network input.
+"""Observation builder — converts raw world state into structured policy inputs.
 
-Observation layout (flat float32 vector):
-  [0 : GRID_FLAT]   — local NxN terrain window (5 channels)
-  [GRID_FLAT : end] — agent state vector
+Observation is a dict with four keys:
 
-Grid channels per cell (in order):
-  0 — terrain type   (normalised to [0, 1])
-  1 — soil quality   (normalised to [0, 1])
-  2 — tree count     (normalised by max_trees)
-  3 — berry count    (normalised by max_berries)
-  4 — stone count    (normalised by max_stone)
+  "local_grid"     — (NUM_CHANNELS, WINDOW, WINDOW) float32 tensor
+  "self_features"  — (SELF_DIM,) float32 vector
+  "memory_features"— (MEMORY_DIM,) float32 vector
+  "action_mask"    — (NUM_ACTIONS,) float32 binary mask
 
-Agent state vector:
-  0   hp             (normalised to [0, 1])
-  1   hunger         (normalised to [0, 1])
-  2   fatigue        (normalised to [0, 1])
-  3   berries carried (log1p normalised)
-  4   wood carried   (log1p normalised)
-  5   stone carried  (log1p normalised)
-  6-9 season         (one-hot, 4 values)
-  10  day            (normalised, resets each year = 4 seasons)
+Spatial and scalar inputs are kept separate so the model can use the
+appropriate encoder (CNN vs MLP) without flattening everything together.
 
-Total dimensions: WINDOW*WINDOW*5 + 11
+Channel layout (NUM_CHANNELS = 15):
+  Terrain   0-3  : grass, forest, mountain, water  (one-hot)
+  Soil      4-6  : poor, normal, fertile            (one-hot)
+  Resources 7-9  : berries, trees, stone            (normalised counts)
+  Entities 10-12 : agent, prey, predator            (binary presence)
+  Structure  13  : home                             (binary)
+  Utility    14  : out_of_bounds                    (binary)
 
-TODO: Add channels for nearby agent positions (requires multi-agent setup).
-TODO: Expose memory tokens as extra state dimensions.
-TODO: Add visibility / fog-of-war mask.
+Self features (SELF_DIM = 14):
+  0  hp              1  hunger       2  thirst       3  tired
+  4  berries_inv     5  meat_inv     6  stored_food
+  7  is_at_home      8  dist_home
+  9-12 season one-hot (spring summer autumn winter)
+  13 day_progress
+
+Memory features (MEMORY_DIM = 12):
+  See MemoryStore.summarize() for layout.
+
+Actions (NUM_ACTIONS = 12):
+  0 move_north   1 move_south   2 move_east    3 move_west
+  4 forage       5 hunt         6 drink        7 eat
+  8 rest         9 sleep       10 store_food  11 retrieve_food
+
+TODO: Add "other agent" layer to CH_ENTITY_AGENT for multi-agent setup.
+TODO: Add fog-of-war mask that blacks out unseen cells.
+TODO: Add day/night cycle channel.
 """
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
+from ai_world_sim.world.animals import Animal
 from ai_world_sim.world.entities import Agent
+from ai_world_sim.world.memory import MEMORY_DIM
 from ai_world_sim.world.sim import WorldSim
 from ai_world_sim.world.systems.seasons import Season
-from ai_world_sim.world.terrain import SoilQuality, TerrainType
+from ai_world_sim.world.terrain import (
+    NUM_CHANNELS,
+    SoilQuality,
+    TerrainType,
+    CH_TERRAIN_GRASS,
+    CH_TERRAIN_FOREST,
+    CH_TERRAIN_MOUNTAIN,
+    CH_TERRAIN_WATER,
+    CH_SOIL_POOR,
+    CH_SOIL_NORMAL,
+    CH_SOIL_FERTILE,
+    CH_RESOURCE_BERRIES,
+    CH_RESOURCE_TREES,
+    CH_RESOURCE_STONE,
+    CH_ENTITY_AGENT,
+    CH_ENTITY_PREY,
+    CH_ENTITY_PREDATOR,
+    CH_STRUCTURE_HOME,
+    CH_OUT_OF_BOUNDS,
+)
 
-NUM_TERRAIN_TYPES = len(TerrainType)
 NUM_SEASONS = len(Season)
-NUM_GRID_CHANNELS = 5
-STATE_DIM = 11
-NUM_ACTIONS = 6
+SELF_DIM = 14
+NUM_ACTIONS = 12
+
+# Action index constants — single source of truth.
+MOVE_NORTH = 0
+MOVE_SOUTH = 1
+MOVE_EAST = 2
+MOVE_WEST = 3
+FORAGE = 4
+HUNT = 5
+DRINK = 6
+EAT = 7
+REST = 8
+SLEEP = 9
+STORE_FOOD = 10
+RETRIEVE_FOOD = 11
+
+_MOVE_DELTAS = {
+    MOVE_NORTH: (-1, 0),
+    MOVE_SOUTH: (1, 0),
+    MOVE_EAST: (0, 1),
+    MOVE_WEST: (0, -1),
+}
 
 
-def obs_dim(window: int) -> int:
-    """Total flat observation size for a given window side length."""
-    return window * window * NUM_GRID_CHANNELS + STATE_DIM
-
-
-def build_observation(
+def build_grid_tensor(
     world: WorldSim,
     agent: Agent,
-    window: int = 5,
+    window: int,
 ) -> np.ndarray:
-    """Return the flat float32 observation vector for *agent* in *world*."""
+    """Return the (NUM_CHANNELS, WINDOW, WINDOW) float32 grid tensor.
+
+    The agent is always centred in the window.  Out-of-bounds cells are
+    encoded with CH_OUT_OF_BOUNDS=1 and all other channels=0.
+    """
     half = window // 2
-    r, c = agent.position
-    obs = np.zeros((window, window, NUM_GRID_CHANNELS), dtype=np.float32)
+    r0, c0 = agent.position
+    grid = np.zeros((NUM_CHANNELS, window, window), dtype=np.float32)
 
     cfg_res = world.config.get("resources", {})
-    max_trees = float(cfg_res.get("max_trees", 10) or 1)
     max_berries = float(cfg_res.get("max_berries", 5) or 1)
+    max_trees = float(cfg_res.get("max_trees", 10) or 1)
     max_stone = float(cfg_res.get("max_stone", 8) or 1)
 
-    for dr in range(-half, half + 1):
-        for dc in range(-half, half + 1):
-            nr, nc = r + dr, c + dc
-            wr, wc = dr + half, dc + half
+    # Build entity presence maps from animal positions.
+    prey_positions: set[tuple[int, int]] = set()
+    predator_positions: set[tuple[int, int]] = set()
+    for animal in world.animals:
+        if animal.alive:
+            if animal.is_prey:
+                prey_positions.add(animal.position)
+            elif animal.is_predator:
+                predator_positions.add(animal.position)
+
+    for wr in range(window):
+        for wc in range(window):
+            nr = r0 + (wr - half)
+            nc = c0 + (wc - half)
+
             if not world.in_bounds(nr, nc):
-                # Out-of-bounds cells encoded as impassable water with no resources.
-                obs[wr, wc, 0] = TerrainType.WATER / (NUM_TERRAIN_TYPES - 1)
+                grid[CH_OUT_OF_BOUNDS, wr, wc] = 1.0
                 continue
+
             cell = world.grid[nr][nc]
-            obs[wr, wc, 0] = cell.terrain / (NUM_TERRAIN_TYPES - 1)
-            obs[wr, wc, 1] = cell.soil / (len(SoilQuality) - 1)
-            obs[wr, wc, 2] = cell.trees / max_trees
-            obs[wr, wc, 3] = cell.berries / max_berries
-            obs[wr, wc, 4] = cell.stone / max_stone
+            pos = (nr, nc)
 
-    grid_flat = obs.reshape(-1)
+            # Terrain (one-hot)
+            ch_terrain = (
+                CH_TERRAIN_GRASS if cell.terrain == TerrainType.GRASS
+                else CH_TERRAIN_FOREST if cell.terrain == TerrainType.FOREST
+                else CH_TERRAIN_MOUNTAIN if cell.terrain == TerrainType.MOUNTAIN
+                else CH_TERRAIN_WATER
+            )
+            grid[ch_terrain, wr, wc] = 1.0
 
-    # Agent state
+            # Soil (one-hot)
+            ch_soil = (
+                CH_SOIL_POOR if cell.soil == SoilQuality.POOR
+                else CH_SOIL_NORMAL if cell.soil == SoilQuality.NORMAL
+                else CH_SOIL_FERTILE
+            )
+            grid[ch_soil, wr, wc] = 1.0
+
+            # Resources (normalised)
+            grid[CH_RESOURCE_BERRIES, wr, wc] = cell.berries / max_berries
+            grid[CH_RESOURCE_TREES, wr, wc] = cell.trees / max_trees
+            grid[CH_RESOURCE_STONE, wr, wc] = cell.stone / max_stone
+
+            # Entities
+            if pos in prey_positions:
+                grid[CH_ENTITY_PREY, wr, wc] = 1.0
+            if pos in predator_positions:
+                grid[CH_ENTITY_PREDATOR, wr, wc] = 1.0
+
+            # Home structure
+            if pos == agent.home_position:
+                grid[CH_STRUCTURE_HOME, wr, wc] = 1.0
+
+    return grid
+
+
+def build_self_features(world: WorldSim, agent: Agent) -> np.ndarray:
+    """Return the (SELF_DIM,) float32 self-feature vector."""
     agent_cfg = world.config.get("agents", {})
     max_hp = float(agent_cfg.get("max_hp", 100.0))
     max_hunger = float(agent_cfg.get("max_hunger", 100.0))
-    max_fatigue = float(agent_cfg.get("max_fatigue", 100.0))
+    max_thirst = float(agent_cfg.get("max_thirst", 100.0))
+    max_tired = float(agent_cfg.get("max_tired", 100.0))
 
     season_one_hot = np.zeros(NUM_SEASONS, dtype=np.float32)
     season_one_hot[world.season] = 1.0
 
     year_length = world._season_sys.days_per_season * NUM_SEASONS
-    day_norm = (world.day % year_length) / max(year_length, 1)
+    day_progress = (world.day % max(year_length, 1)) / max(year_length, 1)
 
-    state = np.array(
+    stored_total = sum(agent.stored_food.values())
+
+    # Distance to home, normalised by world diagonal.
+    dr = agent.home_position[0] - agent.position[0]
+    dc = agent.home_position[1] - agent.position[1]
+    dist_home = math.sqrt(dr * dr + dc * dc) / max(world.world_diag, 1.0)
+
+    return np.array(
         [
             agent.hp / max_hp,
             agent.hunger / max_hunger,
-            agent.fatigue / max_fatigue,
-            np.log1p(agent.item_count("berries")) / np.log1p(20),
-            np.log1p(agent.item_count("wood")) / np.log1p(20),
-            np.log1p(agent.item_count("stone")) / np.log1p(20),
+            agent.thirst / max_thirst,
+            agent.tired / max_tired,
+            math.log1p(agent.item_count("berries")) / math.log1p(20),
+            math.log1p(agent.item_count("meat")) / math.log1p(20),
+            math.log1p(stored_total) / math.log1p(50),
+            1.0 if agent.is_at_home else 0.0,
+            float(min(1.0, dist_home)),
             *season_one_hot,
-            day_norm,
+            float(day_progress),
         ],
         dtype=np.float32,
     )
 
-    return np.concatenate([grid_flat, state])
+
+def build_memory_features(world: WorldSim, agent: Agent) -> np.ndarray:
+    """Refresh agent memory from current visible area and return summary."""
+    # Update memory from what the agent can currently see.
+    agent.memory.update(
+        grid=world.grid,
+        agent_pos=agent.position,
+        animals=world.animals,
+        tick=world.tick_count,
+        sight_radius=world.sight_radius,
+        world_height=world.height,
+        world_width=world.width,
+    )
+    agent.memory.decay(world.tick_count)
+    return agent.memory.summarize(agent.position, world.world_diag)
 
 
 def build_action_mask(world: WorldSim, agent: Agent) -> np.ndarray:
-    """Return a float32 binary mask of shape (NUM_ACTIONS,).
+    """Return a (NUM_ACTIONS,) float32 binary validity mask.
 
-    1.0 = action is valid, 0.0 = action is blocked.
-
-    Actions:
-        0 move_north, 1 move_south, 2 move_east, 3 move_west, 4 forage, 5 rest
+    1.0 = action is valid, 0.0 = blocked.
+    At least one action is always valid (rest is the fallback).
     """
     mask = np.ones(NUM_ACTIONS, dtype=np.float32)
     r, c = agent.position
 
-    # Movement validity
+    # Movement: blocked by impassable terrain or world boundary.
     if not world.is_passable(r - 1, c):
-        mask[0] = 0.0  # north
+        mask[MOVE_NORTH] = 0.0
     if not world.is_passable(r + 1, c):
-        mask[1] = 0.0  # south
+        mask[MOVE_SOUTH] = 0.0
     if not world.is_passable(r, c + 1):
-        mask[2] = 0.0  # east
+        mask[MOVE_EAST] = 0.0
     if not world.is_passable(r, c - 1):
-        mask[3] = 0.0  # west
+        mask[MOVE_WEST] = 0.0
 
-    # Forage only if anything to gather
+    # Forage: current cell must have resources.
     if not world.grid[r][c].has_forageable():
-        mask[4] = 0.0
+        mask[FORAGE] = 0.0
 
-    # Rest is always valid (action 5).
+    # Hunt: must have adjacent living prey.
+    if world.adjacent_prey(r, c) is None:
+        mask[HUNT] = 0.0
 
-    # Safety: at least one action must be valid.
+    # Drink: must be adjacent to water.
+    if not world.adjacent_water(r, c):
+        mask[DRINK] = 0.0
+
+    # Eat: must carry food.
+    if not agent.has_food():
+        mask[EAT] = 0.0
+
+    # Rest / Sleep: always valid.
+
+    # Store food: at home with food in inventory.
+    if not (agent.is_at_home and agent.has_food()):
+        mask[STORE_FOOD] = 0.0
+
+    # Retrieve food: at home with stored food.
+    if not (agent.is_at_home and agent.has_stored_food()):
+        mask[RETRIEVE_FOOD] = 0.0
+
+    # Safety fallback.
     if mask.sum() == 0.0:
-        mask[5] = 1.0  # rest as fallback
+        mask[REST] = 1.0
 
     return mask
+
+
+def build_observation(
+    world: WorldSim,
+    agent: Agent,
+    window: int = 21,
+) -> dict[str, np.ndarray]:
+    """Return the full observation dict for *agent*."""
+    return {
+        "local_grid": build_grid_tensor(world, agent, window),
+        "self_features": build_self_features(world, agent),
+        "memory_features": build_memory_features(world, agent),
+        "action_mask": build_action_mask(world, agent),
+    }

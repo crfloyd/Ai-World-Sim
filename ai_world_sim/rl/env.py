@@ -1,29 +1,23 @@
 """Gymnasium-compatible RL environment wrapping WorldSim.
 
-One environment instance = one world + one agent.
-The environment handles:
-  - world generation from a seeded pool (new seed per episode reset)
-  - action dispatch to WorldSim
-  - observation construction
-  - action masking (included in the obs dict for RLlib)
-  - episode termination (agent death or step limit)
-
 Observation space (Dict):
-  "action_mask"  Box float32 (NUM_ACTIONS,)  — 1=valid, 0=blocked
-  "obs"          Box float32 (OBS_DIM,)      — flat observation vector
+  "local_grid"      Box float32 (NUM_CHANNELS, WINDOW, WINDOW)
+  "self_features"   Box float32 (SELF_DIM,)
+  "memory_features" Box float32 (MEMORY_DIM,)
+  "action_mask"     Box float32 (NUM_ACTIONS,)   1=valid, 0=blocked
 
-Action space:
-  Discrete(6)
-    0 move_north
-    1 move_south
-    2 move_east
-    3 move_west
-    4 forage
-    5 rest
+Action space: Discrete(12)
+  0 move_north   1 move_south   2 move_east    3 move_west
+  4 forage       5 hunt         6 drink        7 eat
+  8 rest         9 sleep       10 store_food  11 retrieve_food
 
-TODO: Extend to multi-agent (one env, N agents, shared policy via RLlib MARL).
-TODO: Add rendering mode for visualisation / story replay.
-TODO: Accept a list of seeds to cycle through deterministically in curriculum.
+Episode termination:
+  terminated: agent died
+  truncated:  max_steps_per_episode reached
+
+TODO: Multi-agent variant (N agents, shared policy, one env).
+TODO: Curriculum seeder (easy worlds early, harder worlds over training).
+TODO: ASCII / pygame render mode for story visualization.
 """
 
 from __future__ import annotations
@@ -34,31 +28,17 @@ from typing import Any
 import gymnasium as gym
 import numpy as np
 
-from ai_world_sim.common.config import load_config, DEFAULT_WORLD_CONFIG_PATH
+from ai_world_sim.common.config import DEFAULT_WORLD_CONFIG_PATH, load_config, merge_configs
 from ai_world_sim.rl.observations import (
-    NUM_ACTIONS,
-    build_action_mask,
-    build_observation,
-    obs_dim,
+    MOVE_NORTH, MOVE_SOUTH, MOVE_EAST, MOVE_WEST,
+    FORAGE, HUNT, DRINK, EAT, REST, SLEEP, STORE_FOOD, RETRIEVE_FOOD,
+    NUM_ACTIONS, NUM_CHANNELS, SELF_DIM,
+    _MOVE_DELTAS, build_observation,
 )
 from ai_world_sim.rl.rewards import survival_reward
 from ai_world_sim.story.events import EventLog
+from ai_world_sim.world.memory import MEMORY_DIM
 from ai_world_sim.world.sim import WorldSim
-
-# Action constants for readability
-MOVE_NORTH = 0
-MOVE_SOUTH = 1
-MOVE_EAST = 2
-MOVE_WEST = 3
-FORAGE = 4
-REST = 5
-
-_MOVE_DELTAS = {
-    MOVE_NORTH: (-1, 0),
-    MOVE_SOUTH: (1, 0),
-    MOVE_EAST: (0, 1),
-    MOVE_WEST: (0, -1),
-}
 
 
 class WorldEnv(gym.Env):
@@ -70,27 +50,41 @@ class WorldEnv(gym.Env):
         super().__init__()
         cfg = env_config or {}
 
-        # Load world config (can be overridden via env_config["world_config"]).
+        # Load world config.
         world_config_path = cfg.get("world_config_path", DEFAULT_WORLD_CONFIG_PATH)
         self.world_config = load_config(world_config_path)
         if "world_config_override" in cfg:
-            from ai_world_sim.common.config import merge_configs
-            self.world_config = merge_configs(self.world_config, cfg["world_config_override"])
+            self.world_config = merge_configs(
+                self.world_config, cfg["world_config_override"]
+            )
 
-        self.window: int = int(cfg.get("observation_window", 5))
-        self.max_steps: int = int(cfg.get("max_steps_per_episode", 500))
-        self.seed_range: tuple[int, int] = tuple(cfg.get("seed_range", [0, 999_999]))
+        mem_cfg = self.world_config.get("memory", {})
+        self.window: int = int(2 * mem_cfg.get("sight_radius", 10) + 1)  # 21
+        self.max_steps: int = int(cfg.get("max_steps_per_episode", 1000))
+        self.seed_range: tuple[int, int] = tuple(cfg.get("seed_range", [0, 899_999]))
 
-        self._obs_dim = obs_dim(self.window)
-
-        # Gymnasium spaces
+        # Gymnasium spaces.
         self.observation_space = gym.spaces.Dict(
             {
-                "action_mask": gym.spaces.Box(
-                    low=0.0, high=1.0, shape=(NUM_ACTIONS,), dtype=np.float32
+                "local_grid": gym.spaces.Box(
+                    low=0.0, high=1.0,
+                    shape=(NUM_CHANNELS, self.window, self.window),
+                    dtype=np.float32,
                 ),
-                "obs": gym.spaces.Box(
-                    low=-np.inf, high=np.inf, shape=(self._obs_dim,), dtype=np.float32
+                "self_features": gym.spaces.Box(
+                    low=0.0, high=1.0,
+                    shape=(SELF_DIM,),
+                    dtype=np.float32,
+                ),
+                "memory_features": gym.spaces.Box(
+                    low=-1.0, high=1.0,
+                    shape=(MEMORY_DIM,),
+                    dtype=np.float32,
+                ),
+                "action_mask": gym.spaces.Box(
+                    low=0.0, high=1.0,
+                    shape=(NUM_ACTIONS,),
+                    dtype=np.float32,
                 ),
             }
         )
@@ -133,17 +127,33 @@ class WorldEnv(gym.Env):
         assert self._world is not None, "Call reset() before step()."
         assert self._agent is not None
 
-        # --- Apply action ----------------------------------------------- #
-        foraged = False
+        # Clear sleeping flag at start of step (any non-sleep action wakes the agent).
+        if int(action) != SLEEP:
+            self._agent.sleeping = False
+
+        stored_food_this_step = False
         action = int(action)
 
+        # --- Dispatch action -------------------------------------------- #
         if action in _MOVE_DELTAS:
             dr, dc = _MOVE_DELTAS[action]
             self._world.move_agent(self._agent, dr, dc)
         elif action == FORAGE:
-            foraged = self._world.forage(self._agent)
+            self._world.forage(self._agent)
+        elif action == HUNT:
+            self._world.hunt(self._agent)
+        elif action == DRINK:
+            self._world.drink(self._agent)
+        elif action == EAT:
+            self._world.eat(self._agent)
         elif action == REST:
             self._world.rest(self._agent)
+        elif action == SLEEP:
+            self._world.sleep(self._agent)
+        elif action == STORE_FOOD:
+            stored_food_this_step = self._world.store_food(self._agent)
+        elif action == RETRIEVE_FOOD:
+            self._world.retrieve_food(self._agent)
 
         # --- Advance world one tick ------------------------------------- #
         was_alive = self._agent.alive
@@ -152,7 +162,7 @@ class WorldEnv(gym.Env):
         self._steps += 1
 
         # --- Reward ----------------------------------------------------- #
-        reward = survival_reward(self._agent, died_this_step, foraged)
+        reward = survival_reward(self._agent, died_this_step, stored_food_this_step)
 
         # --- Termination ------------------------------------------------ #
         terminated = not self._agent.alive
@@ -161,24 +171,24 @@ class WorldEnv(gym.Env):
         info: dict[str, Any] = {
             "day": self._world.day,
             "season": self._world.season.label(),
-            "hunger": self._agent.hunger,
-            "fatigue": self._agent.fatigue,
             "hp": self._agent.hp,
+            "hunger": self._agent.hunger,
+            "thirst": self._agent.thirst,
+            "tired": self._agent.tired,
+            "steps": self._steps,
         }
 
         return self._get_obs(), reward, terminated, truncated, info
 
     def render(self) -> None:
-        pass  # TODO: ASCII or pygame renderer
+        pass  # TODO: ASCII renderer for story / debug mode
 
     # ------------------------------------------------------------------ #
-    # Internal helpers
+    # Helpers
     # ------------------------------------------------------------------ #
 
     def _get_obs(self) -> dict[str, np.ndarray]:
-        obs_vec = build_observation(self._world, self._agent, window=self.window)
-        mask = build_action_mask(self._world, self._agent)
-        return {"action_mask": mask, "obs": obs_vec}
+        return build_observation(self._world, self._agent, window=self.window)
 
     @property
     def event_log(self) -> EventLog | None:

@@ -4,21 +4,19 @@ Usage:
     python -m ai_world_sim.rl.train
     python -m ai_world_sim.rl.train --config configs/train.yaml
 
-The script:
-  1. Reads training and world config.
-  2. Registers WorldEnv with RLlib.
-  3. Builds a PPOConfig with a custom action-masking model.
-  4. Runs training for max_iterations, saving checkpoints.
+The ActionMaskModel wrapper reads the four-key observation dict produced by
+WorldEnv and routes each component to the correct encoder in AgentBrain:
+  "local_grid"      → CNN encoder
+  "self_features"   → self MLP encoder
+  "memory_features" → memory MLP encoder
+  "action_mask"     → applied to logits as -1e9 for invalid actions
 
-Action masking is handled by the ActionMaskModel wrapper below, which
-reads "action_mask" from the observation dict and subtracts a large value
-from invalid action logits before the policy head.
+RLlib preprocessing is disabled (_disable_preprocessor_api=True) so the
+dict observation passes through unchanged to the model forward().
 
-TODO: Switch to RLlib's new API stack (Algorithm.from_config) once it
-      stabilises for custom env + custom model combos.
-TODO: Add curriculum: start with small worlds, grow as policy improves.
-TODO: Add evaluation callbacks to track emergent behaviour metrics.
+TODO: Add curriculum: easy worlds first, increase scarcity over iterations.
 TODO: Log metrics to W&B or TensorBoard.
+TODO: Add validation callbacks that run frozen-policy episodes periodically.
 """
 
 from __future__ import annotations
@@ -26,39 +24,36 @@ from __future__ import annotations
 import argparse
 import os
 from pathlib import Path
-from typing import Any
 
-import ray
+import torch
+import torch.nn as nn
 from ray import tune
 from ray.rllib.algorithms.ppo import PPOConfig
 from ray.rllib.models import ModelCatalog
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import ModelConfigDict
-import torch
-import torch.nn as nn
+import ray
 
 from ai_world_sim.common.config import (
     DEFAULT_TRAIN_CONFIG_PATH,
     DEFAULT_WORLD_CONFIG_PATH,
     load_config,
-    merge_configs,
 )
 from ai_world_sim.rl.env import WorldEnv
 from ai_world_sim.rl.model import AgentBrain
-from ai_world_sim.rl.observations import NUM_ACTIONS, obs_dim
+from ai_world_sim.rl.observations import NUM_ACTIONS
 
 
 # ------------------------------------------------------------------ #
-# RLlib model wrapper with action masking
+# RLlib model wrapper
 # ------------------------------------------------------------------ #
 
 
 class ActionMaskModel(TorchModelV2, nn.Module):
-    """RLlib-compatible wrapper around AgentBrain with action-mask support.
+    """RLlib wrapper around AgentBrain.
 
-    The observation dict is expected to have keys:
-      "obs"          — flat float32 vector of shape (OBS_DIM,)
-      "action_mask"  — float32 vector of shape (NUM_ACTIONS,)
+    The observation dict passes through RLlib unchanged (preprocessor
+    disabled) and is split here into grid / self / memory / mask.
     """
 
     def __init__(
@@ -74,24 +69,24 @@ class ActionMaskModel(TorchModelV2, nn.Module):
         )
         nn.Module.__init__(self)
 
-        custom_cfg: dict = model_config.get("custom_model_config", {})
-        window: int = custom_cfg.get("window", 5)
-        cnn_channels = [tuple(x) for x in custom_cfg.get("cnn_channels", [(16, 3), (32, 3)])]
-        mlp_hidden: list[int] = custom_cfg.get("mlp_hidden", [128, 64])
-        trunk_hidden: list[int] = custom_cfg.get("trunk_hidden", [256, 128])
-
+        cc = model_config.get("custom_model_config", {})
         self.brain = AgentBrain(
-            window=window,
-            cnn_channels=cnn_channels,
-            mlp_hidden=mlp_hidden,
-            trunk_hidden=trunk_hidden,
+            cnn_channels=cc.get("cnn_channels", [32, 64, 64]),
+            use_global_avg_pool=cc.get("use_global_avg_pool", True),
+            self_mlp_hidden=cc.get("self_mlp_hidden", [128, 64]),
+            memory_mlp_hidden=cc.get("memory_mlp_hidden", [64, 32]),
+            trunk_hidden=cc.get("trunk_hidden", [256, 128]),
         )
         self._value_out: torch.Tensor | None = None
 
     def forward(self, input_dict, state, seq_lens):
-        obs = input_dict["obs"]["obs"]
-        action_mask = input_dict["obs"]["action_mask"]
-        logits, value = self.brain(obs, action_mask)
+        obs = input_dict["obs"]
+        local_grid = obs["local_grid"]
+        self_feat = obs["self_features"]
+        mem_feat = obs["memory_features"]
+        action_mask = obs["action_mask"]
+
+        logits, value = self.brain(local_grid, self_feat, mem_feat, action_mask)
         self._value_out = value
         return logits, state
 
@@ -100,28 +95,26 @@ class ActionMaskModel(TorchModelV2, nn.Module):
 
 
 # ------------------------------------------------------------------ #
-# Training entry point
+# Training
 # ------------------------------------------------------------------ #
 
 
-def build_ppo_config(train_cfg: dict, world_cfg: dict) -> PPOConfig:
-    """Construct an RLlib PPOConfig from our YAML config dicts."""
+def build_ppo_config(train_cfg: dict) -> PPOConfig:
     t = train_cfg.get("training", {})
     e = train_cfg.get("environment", {})
     m = train_cfg.get("model", {})
-    window = int(e.get("observation_window", 5))
 
     env_config = {
         "world_config_path": str(DEFAULT_WORLD_CONFIG_PATH),
-        "observation_window": window,
-        "max_steps_per_episode": int(e.get("max_steps_per_episode", 500)),
-        "seed_range": e.get("seed_range", [0, 999_999]),
+        "max_steps_per_episode": int(e.get("max_steps_per_episode", 1000)),
+        "seed_range": [0, 899_999],
     }
 
-    custom_model_config: dict[str, Any] = {
-        "window": window,
-        "cnn_channels": m.get("cnn_filters", [[16, 3], [32, 3]]),
-        "mlp_hidden": m.get("mlp_hidden", [128, 64]),
+    custom_model_config = {
+        "cnn_channels": m.get("cnn_channels", [32, 64, 64]),
+        "use_global_avg_pool": m.get("use_global_avg_pool", True),
+        "self_mlp_hidden": m.get("self_mlp_hidden", [128, 64]),
+        "memory_mlp_hidden": m.get("memory_mlp_hidden", [64, 32]),
         "trunk_hidden": m.get("trunk_hidden", [256, 128]),
     }
 
@@ -146,6 +139,7 @@ def build_ppo_config(train_cfg: dict, world_cfg: dict) -> PPOConfig:
             model={
                 "custom_model": "action_mask_model",
                 "custom_model_config": custom_model_config,
+                "_disable_preprocessor_api": True,
             },
         )
         .resources(num_gpus=int(os.environ.get("NUM_GPUS", 0)))
@@ -154,9 +148,8 @@ def build_ppo_config(train_cfg: dict, world_cfg: dict) -> PPOConfig:
 
 
 def train(train_config_path: str | Path = DEFAULT_TRAIN_CONFIG_PATH) -> None:
-    """Run PPO training loop."""
+    """Run the PPO training loop."""
     train_cfg = load_config(train_config_path)
-    world_cfg = load_config(DEFAULT_WORLD_CONFIG_PATH)
     t = train_cfg.get("training", {})
 
     max_iter: int = int(t.get("max_iterations", 200))
@@ -165,14 +158,13 @@ def train(train_config_path: str | Path = DEFAULT_TRAIN_CONFIG_PATH) -> None:
     Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
     ray.init(ignore_reinit_error=True)
-
     ModelCatalog.register_custom_model("action_mask_model", ActionMaskModel)
 
-    config = build_ppo_config(train_cfg, world_cfg)
+    config = build_ppo_config(train_cfg)
     algo = config.build()
 
     print(f"Starting PPO training for {max_iter} iterations.")
-    print(f"Checkpoints will be saved to: {checkpoint_dir}")
+    print(f"Checkpoints → {checkpoint_dir}")
 
     for i in range(1, max_iter + 1):
         result = algo.train()
@@ -190,7 +182,7 @@ def train(train_config_path: str | Path = DEFAULT_TRAIN_CONFIG_PATH) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train AI World Sim agent with PPO.")
+    parser = argparse.ArgumentParser(description="Train AI World Sim with PPO.")
     parser.add_argument(
         "--config",
         default=str(DEFAULT_TRAIN_CONFIG_PATH),

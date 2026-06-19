@@ -16,17 +16,19 @@ training:
   checkpoint_dir: "checkpoints/"
 
 environment:
-  max_steps_per_episode: 500
-  observation_window: 5     # NxN grid window centered on agent (must be odd)
-  num_seeds: 100
-  seed_range: [0, 999999]
-  num_agents: 1             # agents per world instance (multi-agent is a future TODO)
+  max_steps_per_episode: 1000
+  # observation_window is derived from world.memory.sight_radius: 2*r+1
+  # Set here for explicit documentation; must match world config.
+  observation_window: 21
 
 model:
-  # CNN filters: [out_channels, kernel_size, stride]
-  cnn_filters:
-    - [16, 3, 1]
-    - [32, 3, 1]
-  mlp_hidden: [128, 64]
+  # CNN: list of out_channels for each Conv2d layer (kernel=3, same padding)
+  cnn_channels: [32, 64, 64]
+  # Use global average pooling after CNN to decouple output size from window size
+  use_global_avg_pool: true
+  # MLP hidden layers for self-feature and memory-feature encoders
+  self_mlp_hidden: [128, 64]
+  memory_mlp_hidden: [64, 32]
+  # Shared trunk hidden layers (input is cnn_out + self_embed + memory_embed)
   trunk_hidden: [256, 128]
   use_action_masking: true
